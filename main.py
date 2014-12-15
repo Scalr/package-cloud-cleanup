@@ -1,6 +1,9 @@
 #coding:utf-8
+import os
+import json
 import itertools
 import posixpath
+import logging
 
 import requests
 from StringIO import StringIO
@@ -10,7 +13,9 @@ from debian import deb822, debfile
 from repodataParser.RepoParser import Parser
 
 
+logger = logging.getLogger(__name__)
 
+PACKAGECLOUD_CONFIG = os.path.expanduser('~/.packagecloud')
 API_URL = "https://packagecloud.io/api/v1/"
 
 USER_NAME = "scalr"
@@ -89,7 +94,13 @@ def main(session):
                 print "FAILED TO DELETE", res.text
 
 if __name__ == "__main__":
-    TOKEN = ""
-    session = requests.Session()
-    session.auth = HTTPBasicAuth(TOKEN, "")
-    main(session)
+    try:
+        with open(PACKAGECLOUD_CONFIG) as f:
+                token = json.load(f)["token"]
+    except (IOError, KeyError, ValueError):
+        logging.exception("Failed to open or parse packagecloud config!")
+    else:
+        session = requests.Session()
+        session.auth = HTTPBasicAuth(token, "")
+        main(session)
+
