@@ -1,5 +1,6 @@
 #coding:utf-8
 import os
+import sys
 import json
 import itertools
 import posixpath
@@ -15,6 +16,23 @@ from repodataParser.RepoParser import Parser
 
 logger = logging.getLogger(__name__)
 
+HIGHEST_NUMBER = float("inf")
+HIGHEST_CHAR = "\xff"
+
+def get_vesion_tuple(version, iteration):
+    for pre_release_sep in ("~", "-"):
+        if pre_release_sep in version:
+            final, test = version.split(pre_release_sep, 1)
+            special, index = test.split('.', 1)
+            extra = (special, int(index))
+            break
+    else:
+        # Ensure that pre-releases always rank lower than actual releases
+        final, extra = version, (HIGHEST_NUMBER, HIGHEST_CHAR)
+
+    return tuple([int(v) for v in final.split('.', 3)]) + extra + (iteration,)
+
+
 PACKAGECLOUD_CONFIG = os.path.expanduser('~/.packagecloud')
 API_URL = "https://packagecloud.io/api/v1/"
 
@@ -27,48 +45,46 @@ REPOS = ("scalr-manage", "scalr-manage-a", "scalr-manage-b",)
 UBUNTU_RELEASES = ("precise", "trusty")
 UBUNTU_ARCHS = ("binary-amd64",)
 UBUNTU_PKG_TPL = "https://packagecloud.io/scalr/{repo}/ubuntu/dists/{release}/main/{arch}/Packages"
-# ^^^^^^^^^^^^ TODO - use USER_NAME and PKG_NAME here
+# ^^^^^^^^^^^^ TODO - use USER_NAME here
+
 
 def deb_extract_orderable_version(deb):
-    version = deb["Version"]
-
-    if "-" in version:
-        final, test = version.split('-', 1)
-        special, index = test.split('.', 1)
-        extra = (special, int(index))
+    deb_version = deb["Version"]
+    if "-" in deb_version:
+        if "~" in deb_version:
+            # New format for pre-releases
+            version, iteration = deb_version.rsplit('-')
+        else:
+            head, tail = deb_version.rsplit('-')
+            if tail.isdigit():
+                # New format for actual releases
+                version, iteration = head, tail
+            else:
+                # Old format for pre-release
+                version, iteration = deb_version, '1'
     else:
-        final, extra = version, ()
+        # Old format for actual releases
+        version, iteration = deb_version, '1'
 
-    return tuple([int(v) for v in final.split('.', 3)]) + extra
+    return get_vesion_tuple(version, iteration)
 
 
-def deb_pretty_version(deb):
-    return ".".join(str(v) for v in deb_extract_orderable_version(deb))
+def deb_pretty_name(deb):
+    return posixpath.basename(deb["Filename"])
 
 
 EL_RELEASES = ("6", "7")
 EL_ARCHS = ("x86_64",)
 EL_PRIMARY_TPL = "https://packagecloud.io/scalr/{repo}/el/{release}/{arch}/repodata/primary.xml.gz"
-# ^^^^^^^^^^^^ TODO - use USER_NAME and PKG_NAME here
+# ^^^^^^^^^^^^ TODO - use USER_NAME here
 
 def rpm_extract_orderable_version(rpm):
     version = rpm["version"][1]
-    final, rel = version["ver"], version["rel"]
-
-    if "." in rel:
-        # This is a pre-release, its format is letter.number
-        special, index = rel.split('.', 1)
-        extra = (special, int(index))
-    else:
-        # This is a final release. It needs to compare greater than any pre-release,
-        # so we set the "letter" to \xff
-        extra = (chr(255), int(rel))
-
-    return tuple([int(v) for v in final.split('.', 3)]) + extra
+    return get_vesion_tuple(version["ver"], version["rel"])
 
 
-def rpm_pretty_version(rpm):
-    return ".".join(str(v) for v in rpm_extract_orderable_version(rpm))
+def rpm_pretty_name(rpm):
+    return posixpath.basename(rpm["location"][1]["href"])
 
 
 def main(session):
@@ -91,13 +107,13 @@ def main(session):
         del_pkgs = scalr_manage_pkgs[KEEP_PKGS:]
 
         for pkg in scalr_manage_pkgs:
-            print "CDEL" if pkg in del_pkgs else "KEEP", pkg["Package"], deb_pretty_version(pkg)
+            print "CDEL" if pkg in del_pkgs else "KEEP", deb_pretty_name(pkg)
 
         raw_input("Proceed? (CTRL+C to abort)")
 
         for pkg in del_pkgs:
             del_file = posixpath.basename(pkg["Filename"])
-            print "XDEL", pkg["Package"], deb_pretty_version(pkg), del_file
+            print "XDEL", deb_pretty_name(pkg)
             res = session.delete("/".join([API_URL, "repos", USER_NAME, repo, "ubuntu", release, del_file]))
             res.raise_for_status()
             if "error" in res.json():
@@ -119,13 +135,13 @@ def main(session):
         del_pkgs = scalr_manage_pkgs[KEEP_PKGS:]
 
         for pkg in scalr_manage_pkgs:
-            print "CDEL" if pkg in del_pkgs else "KEEP", pkg["name"][0], rpm_pretty_version(pkg)
+            print "CDEL" if pkg in del_pkgs else "KEEP", rpm_pretty_name(pkg)
 
         raw_input("Proceed? (CTRL+C to abort)")
 
         for pkg in del_pkgs:
             del_file = posixpath.basename(pkg["location"][1]["href"])
-            print "XDEL", pkg["name"][0], rpm_pretty_version(pkg), del_file
+            print "XDEL", rpm_pretty_name(pkg)
             res = session.delete("/".join([API_URL, "repos", USER_NAME, repo, "el", release, del_file]))
             res.raise_for_status()
             if "error" in res.json():
