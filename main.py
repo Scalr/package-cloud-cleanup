@@ -108,10 +108,10 @@ def main(api_session, client_session):
         logger.debug("Process: %s/ubuntu/%s/%s", repo, release, arch)
 
         res = client_session.get(UBUNTU_PKG_TPL.format(repo=repo, release=release, arch=arch), stream=True)
-        pkgs = deb822.Packages.iter_paragraphs(res.iter_lines())
+        all_pkgs = list(deb822.Packages.iter_paragraphs(res.iter_lines()))
 
         for pkg_name in PKG_NAMES:
-            pkgs = [pkg for pkg in pkgs if pkg["Package"] == pkg_name]
+            pkgs = [pkg for pkg in all_pkgs if pkg["Package"] == pkg_name]
             pkgs.sort(key=deb_extract_orderable_version, reverse=True)
 
             logger.info("%s: found %s package(s)", pkg_name, len(pkgs))
@@ -119,8 +119,8 @@ def main(api_session, client_session):
                 continue
 
             for pkg in pkgs[KEEP_PKGS:]:
+                logger.warning("%s: deleting %s", pkg_name, deb_pretty_name(pkg))
                 del_file = posixpath.basename(pkg["Filename"])
-                logger.warning("%s: deleting %s", pkg, del_file)
                 res = api_session.delete("/".join([API_URL, "repos", USER_NAME, repo, "ubuntu", release, del_file]))
                 res.raise_for_status()
                 if "error" in res.json():
@@ -130,10 +130,12 @@ def main(api_session, client_session):
     for repo, release, arch in itertools.product(REPOS, EL_RELEASES, EL_ARCHS):
         logger = logging.getLogger(".".join([repo, "ubuntu", release, arch]))
         logger.debug("Process: %s/el/%s/%s", repo, release, arch)
+
         repodata = ParserWithRequests(client_session, EL_PRIMARY_TPL.format(repo=repo, release=release, arch=arch))
+        all_pkgs = list(repodata.getList())
 
         for pkg_name in PKG_NAMES:
-            pkgs = [pkg for pkg in repodata.getList() if pkg["name"][0] == pkg_name]
+            pkgs = [pkg for pkg in all_pkgs if pkg["name"][0] == pkg_name]
             pkgs.sort(key=rpm_extract_orderable_version, reverse=True)
 
             logger.info("%s: found %s package(s)", pkg_name, len(pkgs))
@@ -141,8 +143,8 @@ def main(api_session, client_session):
                 continue
 
             for pkg in pkgs[KEEP_PKGS:]:
+                logger.warning("%s: deleting %s", pkg_name, rpm_pretty_name(pkg))
                 del_file = posixpath.basename(pkg["location"][1]["href"])
-                logger.warning("%s: deleting %s", pkg, del_file)
                 res = api_session.delete("/".join([API_URL, "repos", USER_NAME, repo, "el", release, del_file]))
                 res.raise_for_status()
                 if "error" in res.json():
