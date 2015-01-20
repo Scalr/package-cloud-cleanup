@@ -1,5 +1,6 @@
 #coding:utf-8
 import os
+import re
 import sys
 import json
 import itertools
@@ -13,34 +14,56 @@ from requests.auth import HTTPBasicAuth
 from debian import deb822, debfile
 from repodataParser.RepoParser import Parser
 
+logging.basicConfig(level=logging.DEBUG, format="%(levelname)s %(asctime)s %(name)s %(message)s")
+logging.getLogger('requests').setLevel(logging.WARNING)
 
-logger = logging.getLogger(__name__)
+HIGHEST_CHAR = chr(127)
+LOWEST_CHAR = chr(0)
 
-HIGHEST_NUMBER = float("inf")
-HIGHEST_CHAR = "\xff"
+
+class ParserWithRequests(Parser):
+    def __init__(self, session, url):
+        self.session = session
+        self.url = url
+        Parser.__init__(self, url=url)
+
+    # Library does name mangling.
+    def _Parser__open(self):
+        self.res = self.session.get(self.url, headers={"User-Agent": "curl/7.37.1"}).content
 
 def get_vesion_tuple(version, iteration):
-    for pre_release_sep in ("~", "-"):
-        if pre_release_sep in version:
-            final, test = version.split(pre_release_sep, 1)
-            special, index = test.split('.', 1)
-            extra = (special, int(index))
+    v_list = []
+
+    def str_processor(s):
+        if not s.endswith('~'):
+            s += HIGHEST_CHAR
+        return s.replace('~', LOWEST_CHAR)
+
+    for processor, matcher in itertools.cycle([
+        (str_processor, re.compile('^(\D*)(.*)$')),
+        (int, re.compile('^(\d*)(.*)$'))
+    ]):
+
+        if not version:
             break
-    else:
-        # Ensure that pre-releases always rank lower than actual releases
-        final, extra = version, (HIGHEST_NUMBER, HIGHEST_CHAR)
 
-    return tuple([int(v) for v in final.split('.', 3)]) + extra + (iteration,)
+        bit, version = matcher.match(version).groups()
+
+        if bit:
+            v_list.append(processor(bit))
+
+    v_list.append(iteration)
+    return tuple(v_list)
 
 
-PACKAGECLOUD_CONFIG = os.path.expanduser('~/.packagecloud')
+PACKAGE_CLOUD_CONFIG = os.path.expanduser('~/.packagecloud')
 API_URL = "https://packagecloud.io/api/v1/"
 
 USER_NAME = "scalr"
-PKG_NAME = "scalr-manage"
+PKG_NAMES = ("scalr-manage", "scalr-server")
 KEEP_PKGS = 2
 
-REPOS = ("scalr-manage", "scalr-manage-a", "scalr-manage-b",)
+REPOS = ("scalr-manage", "scalr-manage-a", "scalr-server", "scalr-server-ee")
 
 UBUNTU_RELEASES = ("precise", "trusty")
 UBUNTU_ARCHS = ("binary-amd64",)
@@ -49,25 +72,14 @@ UBUNTU_PKG_TPL = "https://packagecloud.io/scalr/{repo}/ubuntu/dists/{release}/ma
 
 
 def deb_extract_orderable_version(deb):
-    deb_version = deb["Version"]
+    deb_version = deb["Version"].decode('utf-8')
+    deb_version.replace('~', HIGHEST_CHAR)
+
     if "-" in deb_version:
-        if "~" in deb_version:
-            # New format for pre-releases
-            version, iteration = deb_version.rsplit('-')
-        else:
-            head, tail = deb_version.rsplit('-')
-            if tail.isdigit():
-                # New format for actual releases
-                version, iteration = head, tail
-            else:
-                # Old format for pre-release
-                version, iteration = deb_version, '1'
+        version, iteration = deb_version.split('-')
     else:
-        # Old format for actual releases
         version, iteration = deb_version, '1'
-
     return get_vesion_tuple(version, iteration)
-
 
 def deb_pretty_name(deb):
     return posixpath.basename(deb["Filename"])
@@ -80,6 +92,7 @@ EL_PRIMARY_TPL = "https://packagecloud.io/scalr/{repo}/el/{release}/{arch}/repod
 
 def rpm_extract_orderable_version(rpm):
     version = rpm["version"][1]
+    ver, rel = version["ver"], version["rel"]
     return get_vesion_tuple(version["ver"], version["rel"])
 
 
@@ -87,74 +100,64 @@ def rpm_pretty_name(rpm):
     return posixpath.basename(rpm["location"][1]["href"])
 
 
-def main(session):
+def main(api_session, client_session):
     # Start with Ubuntu
+    # TODO - Abstract this!
     for repo, release, arch in itertools.product(REPOS, UBUNTU_RELEASES, UBUNTU_ARCHS):
-        print
-        print "PROCESSING {0}/{1}/{2}".format(repo, release, arch)
-        res = session.get(UBUNTU_PKG_TPL.format(repo=repo, release=release, arch=arch), stream=True)
+        logger = logging.getLogger(".".join([repo, "ubuntu", release, arch]))
+        logger.debug("Process: %s/ubuntu/%s/%s", repo, release, arch)
+
+        res = client_session.get(UBUNTU_PKG_TPL.format(repo=repo, release=release, arch=arch), stream=True)
         pkgs = deb822.Packages.iter_paragraphs(res.iter_lines())
 
-        scalr_manage_pkgs = [pkg for pkg in pkgs if pkg["Package"] == PKG_NAME]
-        scalr_manage_pkgs.sort(key=deb_extract_orderable_version, reverse=True)
+        for pkg_name in PKG_NAMES:
+            pkgs = [pkg for pkg in pkgs if pkg["Package"] == pkg_name]
+            pkgs.sort(key=deb_extract_orderable_version, reverse=True)
 
-        # TODO - Abstract this!
+            logger.info("%s: found %s package(s)", pkg_name, len(pkgs))
+            if len(pkgs) <= KEEP_PKGS:
+                continue
 
-        if len(scalr_manage_pkgs) <= KEEP_PKGS:
-            print "Only {0} packages in {1}/{2}/{3}".format(len(scalr_manage_pkgs), repo, release, arch)
-            continue
+            del_pkgs = pkgs[KEEP_PKGS:]
 
-        del_pkgs = scalr_manage_pkgs[KEEP_PKGS:]
-
-        for pkg in scalr_manage_pkgs:
-            print "CDEL" if pkg in del_pkgs else "KEEP", deb_pretty_name(pkg)
-
-        raw_input("Proceed? (CTRL+C to abort)")
-
-        for pkg in del_pkgs:
-            del_file = posixpath.basename(pkg["Filename"])
-            print "XDEL", deb_pretty_name(pkg)
-            res = session.delete("/".join([API_URL, "repos", USER_NAME, repo, "ubuntu", release, del_file]))
-            res.raise_for_status()
-            if "error" in res.json():
-                print "FAILED TO DELETE", res.text
+            for pkg in del_pkgs:
+                del_file = posixpath.basename(pkg["Filename"])
+                logger.warning("%s: deleting %s", pkg, del_file)
+                res = api_session.delete("/".join([API_URL, "repos", USER_NAME, repo, "ubuntu", release, del_file]))
+                res.raise_for_status()
+                if "error" in res.json():
+                    logger.error("%s: failed to delete %s (%s)", pkg, del_file, res.text)
 
     # Now, do EL
     for repo, release, arch in itertools.product(REPOS, EL_RELEASES, EL_ARCHS):
-        print
-        print "PROCESSING {0}/{1}/{2}".format(repo, release, arch)
-        repodata = Parser(url=EL_PRIMARY_TPL.format(repo=repo, release=release, arch=arch))
+        logger = logging.getLogger(".".join([repo, "ubuntu", release, arch]))
+        logger.debug("Process: %s/el/%s/%s", repo, release, arch)
+        repodata = ParserWithRequests(client_session, EL_PRIMARY_TPL.format(repo=repo, release=release, arch=arch))
 
-        scalr_manage_pkgs = [pkg for pkg in repodata.getList() if pkg["name"][0] == PKG_NAME]
-        scalr_manage_pkgs.sort(key=rpm_extract_orderable_version, reverse=True)
+        for pkg_name in PKG_NAMES:
+            pkgs = [pkg for pkg in repodata.getList() if pkg["name"][0] == pkg_name]
+            pkgs.sort(key=rpm_extract_orderable_version, reverse=True)
 
-        if len(scalr_manage_pkgs) <= KEEP_PKGS:
-            print "Only {0} packages in {1}/{2}/{3}".format(len(scalr_manage_pkgs), repo, release, arch)
-            continue
+            logger.info("%s: found %s package(s)", pkg_name, len(pkgs))
+            if len(pkgs) <= KEEP_PKGS:
+                continue
 
-        del_pkgs = scalr_manage_pkgs[KEEP_PKGS:]
-
-        for pkg in scalr_manage_pkgs:
-            print "CDEL" if pkg in del_pkgs else "KEEP", rpm_pretty_name(pkg)
-
-        raw_input("Proceed? (CTRL+C to abort)")
-
-        for pkg in del_pkgs:
-            del_file = posixpath.basename(pkg["location"][1]["href"])
-            print "XDEL", rpm_pretty_name(pkg)
-            res = session.delete("/".join([API_URL, "repos", USER_NAME, repo, "el", release, del_file]))
-            res.raise_for_status()
-            if "error" in res.json():
-                print "FAILED TO DELETE", res.text
+            for pkg in del_pkgs:
+                del_file = posixpath.basename(pkg["location"][1]["href"])
+                logger.warning("%s: deleting %s", pkg, del_file)
+                res = api_session.delete("/".join([API_URL, "repos", USER_NAME, repo, "el", release, del_file]))
+                res.raise_for_status()
+                if "error" in res.json():
+                    logger.error("%s: failed to delete %s (%s)", pkg, del_file, res.text)
 
 if __name__ == "__main__":
-    try:
-        with open(PACKAGECLOUD_CONFIG) as f:
-                token = json.load(f)["token"]
-    except (IOError, KeyError, ValueError):
-        logging.exception("Failed to open or parse packagecloud config!")
-    else:
-        session = requests.Session()
-        session.auth = HTTPBasicAuth(token, "")
-        main(session)
+    api_token = os.environ["API_TOKEN"]
+    api_session = requests.Session()
+    api_session.auth = HTTPBasicAuth(api_token, "")
+
+    client_token = os.environ["CLIENT_TOKEN"]
+    client_session = requests.Session()
+    client_session.auth = HTTPBasicAuth(client_token, "")
+
+    main(api_session, client_session)
 
