@@ -118,9 +118,7 @@ def main(api_session, client_session):
             if len(pkgs) <= KEEP_PKGS:
                 continue
 
-            del_pkgs = pkgs[KEEP_PKGS:]
-
-            for pkg in del_pkgs:
+            for pkg in pkgs[KEEP_PKGS:]:
                 del_file = posixpath.basename(pkg["Filename"])
                 logger.warning("%s: deleting %s", pkg, del_file)
                 res = api_session.delete("/".join([API_URL, "repos", USER_NAME, repo, "ubuntu", release, del_file]))
@@ -142,7 +140,7 @@ def main(api_session, client_session):
             if len(pkgs) <= KEEP_PKGS:
                 continue
 
-            for pkg in del_pkgs:
+            for pkg in pkgs[KEEP_PKGS:]:
                 del_file = posixpath.basename(pkg["location"][1]["href"])
                 logger.warning("%s: deleting %s", pkg, del_file)
                 res = api_session.delete("/".join([API_URL, "repos", USER_NAME, repo, "el", release, del_file]))
