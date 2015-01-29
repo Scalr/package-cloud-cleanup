@@ -63,7 +63,7 @@ USER_NAME = "scalr"
 PKG_NAMES = ("scalr-manage", "scalr-server")
 KEEP_PKGS = 2
 
-REPOS = ("scalr-manage", "scalr-manage-a", "scalr-server", "scalr-server-ee")
+REPOS = ("scalr-manage", "scalr-manage-a", "scalr-server-oss", "scalr-server-ee")
 
 UBUNTU_RELEASES = ("precise", "trusty")
 UBUNTU_ARCHS = ("binary-amd64",)
