@@ -101,6 +101,8 @@ def rpm_pretty_name(rpm):
 
 
 def main(api_session, client_session):
+    has_erred = False
+
     # Start with Debs
     # TODO - Abstract this!
     for repo, platform, arch in itertools.product(REPOS, DEB_PLATFORMS, DEB_ARCHS):
@@ -126,6 +128,7 @@ def main(api_session, client_session):
                 res.raise_for_status()
                 if "error" in res.json():
                     logger.error("%s: failed to delete %s (%s)", pkg, del_file, res.text)
+                    has_erred = True
 
     # Now, do EL
     for repo, platform, arch in itertools.product(REPOS, RPM_PLATFORMS, RPM_ARCHS):
@@ -150,6 +153,9 @@ def main(api_session, client_session):
                 res.raise_for_status()
                 if "error" in res.json():
                     logger.error("%s: failed to delete %s (%s)", pkg, del_file, res.text)
+                    has_erred = True
+
+    return 1 if has_erred else 0
 
 if __name__ == "__main__":
     api_token = os.environ["API_TOKEN"]
@@ -160,5 +166,5 @@ if __name__ == "__main__":
     client_session = requests.Session()
     client_session.auth = HTTPBasicAuth(client_token, "")
 
-    main(api_session, client_session)
+    sys.exit(main(api_session, client_session))
 
