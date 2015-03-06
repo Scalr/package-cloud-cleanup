@@ -65,9 +65,9 @@ KEEP_PKGS = 2
 
 REPOS = ("scalr-manage", "scalr-manage-a", "scalr-server-oss", "scalr-server-ee")
 
-UBUNTU_RELEASES = ("precise", "trusty")
-UBUNTU_ARCHS = ("binary-amd64",)
-UBUNTU_PKG_TPL = "https://packagecloud.io/scalr/{repo}/ubuntu/dists/{release}/main/{arch}/Packages"
+DEB_PLATFORMS = ("ubuntu/precise", "ubuntu/trusty", "debian/wheezy", "debian/jessie")
+DEB_ARCHS = ("binary-amd64",)
+DEB_PKG_TPL = "https://packagecloud.io/scalr/{repo}/{os}/dists/{release}/main/{arch}/Packages"
 # ^^^^^^^^^^^^ TODO - use USER_NAME here
 
 
@@ -85,9 +85,9 @@ def deb_pretty_name(deb):
     return posixpath.basename(deb["Filename"])
 
 
-EL_RELEASES = ("6", "7")
-EL_ARCHS = ("x86_64",)
-EL_PRIMARY_TPL = "https://packagecloud.io/scalr/{repo}/el/{release}/{arch}/repodata/primary.xml.gz"
+RPM_PLATFORMS = ("el/6", "el/7", "ol/6", "ol/7")
+RPM_ARCHS = ("x86_64",)
+RPM_PRIMARY_TPL = "https://packagecloud.io/scalr/{repo}/{platform}/{arch}/repodata/primary.xml.gz"
 # ^^^^^^^^^^^^ TODO - use USER_NAME here
 
 def rpm_extract_orderable_version(rpm):
@@ -101,13 +101,14 @@ def rpm_pretty_name(rpm):
 
 
 def main(api_session, client_session):
-    # Start with Ubuntu
+    # Start with Debs
     # TODO - Abstract this!
-    for repo, release, arch in itertools.product(REPOS, UBUNTU_RELEASES, UBUNTU_ARCHS):
-        logger = logging.getLogger(".".join([repo, "ubuntu", release, arch]))
-        logger.debug("Process: %s/ubuntu/%s/%s", repo, release, arch)
+    for repo, platform, arch in itertools.product(REPOS, DEB_PLATFORMS, DEB_ARCHS):
+        logger = logging.getLogger(".".join([repo, platform, arch]))
+        logger.debug("Process: %s/%s/%s", repo, platform, arch)
 
-        res = client_session.get(UBUNTU_PKG_TPL.format(repo=repo, release=release, arch=arch), stream=True)
+        os, release = platform.split("/")
+        res = client_session.get(DEB_PKG_TPL.format(repo=repo, os=os, release=release, arch=arch), stream=True)
         all_pkgs = list(deb822.Packages.iter_paragraphs(res.iter_lines()))
 
         for pkg_name in PKG_NAMES:
@@ -121,17 +122,17 @@ def main(api_session, client_session):
             for pkg in pkgs[KEEP_PKGS:]:
                 logger.warning("%s: deleting %s", pkg_name, deb_pretty_name(pkg))
                 del_file = posixpath.basename(pkg["Filename"])
-                res = api_session.delete("/".join([API_URL, "repos", USER_NAME, repo, "ubuntu", release, del_file]))
+                res = api_session.delete("/".join([API_URL, "repos", USER_NAME, repo, platform, del_file]))
                 res.raise_for_status()
                 if "error" in res.json():
                     logger.error("%s: failed to delete %s (%s)", pkg, del_file, res.text)
 
     # Now, do EL
-    for repo, release, arch in itertools.product(REPOS, EL_RELEASES, EL_ARCHS):
-        logger = logging.getLogger(".".join([repo, "ubuntu", release, arch]))
-        logger.debug("Process: %s/el/%s/%s", repo, release, arch)
+    for repo, platform, arch in itertools.product(REPOS, RPM_PLATFORMS, RPM_ARCHS):
+        logger = logging.getLogger(".".join([repo, platform, arch]))
+        logger.debug("Process: %s/%s/%s", repo, platform, arch)
 
-        repodata = ParserWithRequests(client_session, EL_PRIMARY_TPL.format(repo=repo, release=release, arch=arch))
+        repodata = ParserWithRequests(client_session, RPM_PRIMARY_TPL.format(repo=repo, platform=platform, arch=arch))
         all_pkgs = list(repodata.getList())
 
         for pkg_name in PKG_NAMES:
@@ -145,7 +146,7 @@ def main(api_session, client_session):
             for pkg in pkgs[KEEP_PKGS:]:
                 logger.warning("%s: deleting %s", pkg_name, rpm_pretty_name(pkg))
                 del_file = posixpath.basename(pkg["location"][1]["href"])
-                res = api_session.delete("/".join([API_URL, "repos", USER_NAME, repo, "el", release, del_file]))
+                res = api_session.delete("/".join([API_URL, "repos", USER_NAME, repo, "el", platform, del_file]))
                 res.raise_for_status()
                 if "error" in res.json():
                     logger.error("%s: failed to delete %s (%s)", pkg, del_file, res.text)
