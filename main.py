@@ -146,7 +146,7 @@ def main(api_session, client_session):
             for pkg in pkgs[KEEP_PKGS:]:
                 logger.warning("%s: deleting %s", pkg_name, rpm_pretty_name(pkg))
                 del_file = posixpath.basename(pkg["location"][1]["href"])
-                res = api_session.delete("/".join([API_URL, "repos", USER_NAME, repo, "el", platform, del_file]))
+                res = api_session.delete("/".join([API_URL, "repos", USER_NAME, repo, platform, del_file]))
                 res.raise_for_status()
                 if "error" in res.json():
                     logger.error("%s: failed to delete %s (%s)", pkg, del_file, res.text)
