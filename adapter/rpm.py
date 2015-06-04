@@ -1,11 +1,16 @@
 # coding:utf-8
+from xml.etree import ElementTree
+
 from repodataParser.RepoParser import Parser
 
 from ._base import BaseRepoAdapter
 from ._util import get_version_tuple
 
 
-RPM_PRIMARY_TPL = "https://packagecloud.io/{user}/{repo}/{platform}/{arch}/repodata/primary.xml.gz"
+RPM_ROOT_TPL = "https://packagecloud.io/{user}/{repo}/{platform}/{arch}/"
+RPM_REPOMD_PATH = "repodata/repomd.xml"
+
+RPM_REPOMD_NS = {'repo': 'http://linux.duke.edu/metadata/repo'}
 
 
 class ParserWithRequests(Parser):
@@ -40,6 +45,12 @@ class RpmRepoAdapter(BaseRepoAdapter):
         return get_version_tuple(ver, rel)
 
     def _fetch_package_list(self, platform, arch):
-        repodata = ParserWithRequests(self.client_session, RPM_PRIMARY_TPL.format(user=self.user, repo=self.repo, platform=platform, arch=arch))
+        root_url = RPM_ROOT_TPL.format(user=self.user, repo=self.repo, platform=platform, arch=arch)
+        # Get repomd for primary URL first
+
+        repomd = self.client_session.get("{0}{1}".format(root_url, RPM_REPOMD_PATH)).text
+        primary_path = ElementTree.fromstring(repomd).findall("./repo:data[@type='primary']/repo:location", RPM_REPOMD_NS)[0].get('href')
+
+        repodata = ParserWithRequests(self.client_session, "{0}{1}".format(root_url, primary_path))
         return  list(repodata.getList())
 
